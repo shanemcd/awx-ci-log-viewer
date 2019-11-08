@@ -1,0 +1,118 @@
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: "awx-ci-log-viewer"
+spec:
+  replicas: 1
+  serviceName: "awx-ci-log-viewer"
+  selector:
+    matchLabels:
+      app: awx-ci-log-viewer
+  template:
+    metadata:
+      labels:
+        app: awx-ci-log-viewer
+    spec:
+      initContainers:
+        - name: clone-repo
+          image: alpine/git
+          workingDir: /repo
+          command:
+            - /usr/local/git/git-clone.sh
+          volumeMounts:
+            - name: git-repo
+              mountPath: /repo
+            - name: git-clone
+              mountPath: /usr/local/git
+      containers:
+        - name: awx-ci-log-viewer
+          image: "nginx"
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: git-repo
+              mountPath: /usr/share/nginx/html/
+        - name: awx-ci-log-server
+          image: quay.io/awx/awx-ci-log-server:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8765
+          volumeMounts:
+            - name: awx-ci-logs
+              mountPath: /logs
+          readinessProbe:
+            httpGet:
+              port: 8765
+              path: /healthz/
+      volumes:
+        - name: git-repo
+          emptyDir:
+            medium: Memory
+        - name: git-clone
+          configMap:
+            name: "clone-awx-ci-log-viewer"
+            defaultMode: 0770
+        - name: awx-ci-logs
+          emptyDir:
+            medium: Memory
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "clone-awx-ci-log-viewer"
+data:
+  git-clone.sh: |
+    #!/bin/sh -xe
+    git clone https://github.com/shanemcd/awx-ci-log-viewer.git .
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: awx-ci-log-viewer
+  name: awx-ci-log-viewer
+  namespace: awx-ci
+spec:
+  externalTrafficPolicy: Cluster
+  ports:
+  - name: http
+    port: 80
+    protocol: TCP
+    targetPort: 80
+  - name: websockets
+    port: 8765
+    protocol: TCP
+    targetPort: 8765
+  selector:
+    app: awx-ci-log-viewer
+  sessionAffinity: None
+  type: NodePort
+status:
+  loadBalancer: {}
+
+---
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: awx-ci-log-viewer
+  annotations:
+    kubernetes.io/ingress.global-static-ip-name: "awx-ci-log-viewer"
+spec:
+  backend:
+    serviceName: awx-ci-log-viewer
+    servicePort: 80
+
+---
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: awx-ci-log-server
+  annotations:
+    kubernetes.io/ingress.global-static-ip-name: "awx-ci-log-server"
+spec:
+  backend:
+    serviceName: awx-ci-log-viewer
+    servicePort: 8765
